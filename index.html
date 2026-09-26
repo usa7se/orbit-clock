@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  埋め込み先と color-scheme が食い違うと、ブラウザが iframe の背景を不透明に塗りつぶす。
+  標準では "light dark" にして端末の設定に従わせる（公開した Notion ページも端末の設定に従うので一致する）。
+  theme=dark / theme=light を指定したときだけ、その配色に固定する。
+-->
+<meta name="color-scheme" content="light dark">
+<script>
+  (() => {
+    const t = new URLSearchParams(location.search).get('theme');
+    if (t === 'dark' || t === 'light') document.querySelector('meta[name="color-scheme"]').content = t;
+  })();
+</script>
+<title>星の時計</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Marcellus&display=swap">
+<!--
+  星の時計 — Notion / Webページ埋め込み用の軌道時計
+
+  ?style= にデザイン名かシード番号（#を除いた4桁）を指定する。例：?style=reflection または ?style=0908
+    白一色の月と魔法陣
+      reflection     0908  水鏡の月
+      starbirth      0902  星生みの陣
+      phasesigil     0801  月輪の陣
+      constellation  0806  星図の陣
+      crescentgate   0805  三日月の門
+      moondrop       0808  月の雫
+      flower         0704  花の陣
+      lightning      0706  雷の陣
+      heptagram      0602  七星の陣
+    色つきの月（第5弾）
+      nebula         0501  満月の星雲（省略時）
+      eclipse        0502  日食
+      corona         0503  黄金のコロナ
+      lunar          0504  満月と満ち欠け
+
+  &theme=dark / &theme=light で配色を固定（省略時は見る人の端末の設定に合わせ、ライトなら夜空の円を敷く）
+
+  外側の軌道＝時、中央の軌道＝分、内側の軌道＝秒
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: transparent !important; overflow: hidden; }
+  body { display: grid; place-items: center; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="clock" role="img" aria-label="時計"></canvas>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const fixedTheme = ['dark', 'light'].includes(params.get('theme')) ? params.get('theme') : null;
+  const prefersLight = matchMedia('(prefers-color-scheme: light)');
+  // 描くたびに判定するので、端末の設定が途中で変わってもすぐ追従する
+  const isLight = () => fixedTheme ? fixedTheme === 'light' : prefersLight.matches;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const TAU = Math.PI * 2, UP = -TAU / 4;
+  // 元の時計を実測した寸法（316×262の座標系）
+  const W = 316, H = 262, CX = 158, CY = 131, RS = 49, RM = 82, RH = 99;
+  // 月齢：2000年1月6日18:14(UTC)の新月を基準に、朔望月で割る
+  const SYNODIC = 29.530588853, NEW_MOON_REF = Date.UTC(2000, 0, 6, 18, 14);
+  const lunarAge = d => ((((d - NEW_MOON_REF) / 864e5) % SYNODIC) + SYNODIC) % SYNODIC;
+  const illumOfAge = age => (1 - Math.cos(age / SYNODIC * TAU)) / 2;
+  const P = (r, a) => [CX + Math.cos(a) * r, CY + Math.sin(a) * r];
+  function rng(seed) { seed = (Math.abs(Math.floor(seed)) % 2147483646) + 1; return () => (seed = (seed * 16807) % 2147483647) / 2147483647; }
+  const hhmmOf = now => String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+
+  // ════════════════════════════════════════════════════════════
+  //  色つきの月（第5弾）
+  // ════════════════════════════════════════════════════════════
+  const MOON = (() => {
+    function makeStars(n, seed) {
+      const r = rng(seed), s = [];
+      for (let i = 0; i < n; i++) {
+        const x = r() * W, y = r() * H;
+        // 枠の端に近いほど薄くして、四角い境界が見えないようにする
+        const nx = (x - CX) / (W / 2), ny = (y - CY) / (H / 2);
+        s.push({ x, y, z: r() * 1.1 + .3, p: r() * TAU, fade: Math.max(0, 1 - Math.pow(nx * nx + ny * ny, 1.4)) });
+      }
+      return s;
+    }
+    const st = makeStars(110, 4321);
+    function angles(now) {
+      const ms = now.getMilliseconds(), sec = now.getSeconds() + ms / 1000;
+      const min = now.getMinutes() + sec / 60, hr = (now.getHours() % 12) + min / 60;
+      const m = min / 60 * TAU + UP;
+      return {
+        h: hr / 12 * TAU + UP, m, s: sec / 60 * TAU + UP, sub: ms / 1000 * TAU + UP, hhmm: hhmmOf(now),
+        minIllum: (1 - Math.cos(m - UP)) / 2, hourIllum: illumOfAge(lunarAge(now))
+      };
+    }
+    function glow(ctx, x, y, r, color, inner = 0) {
+      const g = ctx.createRadialGradient(x, y, inner, x, y, r);
+      g.addColorStop(0, color); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    }
+    function dot(ctx, x, y, r, c) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); }
+    function ring(ctx, x, y, r, c, w = 1) { ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke(); }
+    function ticks(ctx, r, c, w = 1) {
+      ctx.strokeStyle = c; ctx.lineWidth = w;
+      for (let i = 0; i < 12; i++) {
+        const a = i / 12 * TAU, l = i % 3 === 0 ? 13 : 9;
+        ctx.beginPath(); ctx.moveTo(...P(r - l / 2, a)); ctx.lineTo(...P(r + l / 2, a)); ctx.stroke();
+      }
+    }
+    function orbits(ctx, c) { ring(ctx, CX, CY, RS, c[0], .9); ring(ctx, CX, CY, RM, c[1], .9); ring(ctx, CX, CY, RH, c[2], .9); }
+    function text(ctx, s, x, y, c) {
+      ctx.fillStyle = c; ctx.font = '12px Marcellus, "Hiragino Mincho ProN", "Yu Mincho", serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(s, x, y);
+    }
+    function stars(ctx, t, rgb, amp = .8) {
+      for (const s of st) {
+        const tw = .35 + .65 * (.5 + .5 * Math.sin(t * 1.4 * s.z + s.p));
+        dot(ctx, s.x, s.y, s.z * .6, `rgba(${rgb},${tw * amp * s.fade})`);
+      }
+    }
+    function nebula(ctx, t, c) {
+      glow(ctx, CX, CY, 125, c[0]);
+      glow(ctx, CX - 38 + Math.sin(t * .15) * 6, CY - 22, 70, c[1]);
+      glow(ctx, CX + 42, CY + 26 + Math.cos(t * .12) * 6, 64, c[2]);
+      glow(ctx, CX + 18, CY - 48, 46, c[3]);
+    }
+    function corona(ctx, t, rgb, reach = 1, rays = 40) {
+      const pulse = 1 + Math.sin(t * .8) * .05;
+      glow(ctx, CX, CY, 36 * pulse * reach, `rgba(${rgb},.55)`, 8);
+      ctx.lineWidth = .6;
+      for (let i = 0; i < rays; i++) {
+        const a = i / rays * TAU + t * .03, l = (8 + 8 * (.5 + .5 * Math.sin(i * 7.3 + t * .9))) * reach;
+        ctx.strokeStyle = `rgba(${rgb},${.25 + .2 * Math.sin(i * 3.1)})`;
+        ctx.beginPath(); ctx.moveTo(...P(11, a)); ctx.lineTo(...P(11 + l, a)); ctx.stroke();
+      }
+    }
+    // 満ち欠けする月。光る側は中心を向く。新月でも位置がわかるよう、暗い部分と輪郭をうっすら描く
+    function moon(ctx, r, a, size, illum, c) {
+      const [x, y] = P(r, a);
+      glow(ctx, x, y, size * (1.6 + illum * 1.2), c.halo);
+      ctx.save(); ctx.translate(x, y); ctx.rotate(a + Math.PI);
+      dot(ctx, 0, 0, size, c.shade);
+      ring(ctx, 0, 0, size, c.edge, .6);
+      const k = 1 - 2 * illum;
+      ctx.fillStyle = c.lit; ctx.beginPath();
+      ctx.arc(0, 0, size, -TAU / 4, TAU / 4);
+      ctx.ellipse(0, 0, Math.abs(k) * size, size, 0, TAU / 4, -TAU / 4, k > 0);
+      ctx.fill(); ctx.restore();
+    }
+    function moonHands(ctx, T, c) { moon(ctx, RH, T.h, 11, T.hourIllum, c); moon(ctx, RM, T.m, 9.5, T.minIllum, c); }
+    // 秒の惑星：60秒で1周。外周の輪を小さな●が1秒で1周する
+    function secondPlanet(ctx, T, core, ringColor, halo) {
+      const [x, y] = P(RS, T.s);
+      if (halo) glow(ctx, x, y, 15, halo);
+      dot(ctx, x, y, 4.2, core);
+      ring(ctx, x, y, 7.5, ringColor, 1.1);
+      dot(ctx, x + Math.cos(T.sub) * 7.5, y + Math.sin(T.sub) * 7.5, 1.9, core);
+    }
+
+    return {
+      nebula(ctx, t, now) {
+        const T = angles(now);
+        nebula(ctx, t, ['rgba(98,70,200,.30)', 'rgba(150,90,230,.28)', 'rgba(60,160,215,.24)', 'rgba(215,90,175,.16)']);
+        stars(ctx, t, '255,255,255');
+        orbits(ctx, ['rgba(215,205,255,.42)', 'rgba(215,205,255,.36)', 'rgba(215,205,255,.30)']);
+        ticks(ctx, RM, 'rgba(230,220,255,.65)', 1.1);
+        glow(ctx, CX, CY, 34, 'rgba(255,215,160,.55)');
+        dot(ctx, CX, CY, 9, '#fff1d6');
+        text(ctx, T.hhmm, CX, CY - 20, 'rgba(255,242,220,.95)');
+        moonHands(ctx, T, { lit: '#eceffa', shade: 'rgba(150,140,220,.2)', edge: 'rgba(220,215,255,.22)', halo: 'rgba(200,190,255,.28)' });
+        secondPlanet(ctx, T, '#ffffff', 'rgba(255,255,255,.85)', 'rgba(255,255,255,.3)');
+      },
+      eclipse(ctx, t, now) {
+        const T = angles(now);
+        stars(ctx, t, '233,238,247', .45);
+        orbits(ctx, ['rgba(170,178,196,.42)', 'rgba(170,178,196,.36)', 'rgba(170,178,196,.3)']);
+        ticks(ctx, RM, 'rgba(233,238,247,.6)', 1);
+        const pulse = 1 + Math.sin(t * .8) * .05;
+        glow(ctx, CX, CY, 34 * pulse, 'rgba(245,217,160,.5)');
+        ctx.strokeStyle = 'rgba(245,217,160,.4)'; ctx.lineWidth = .6;
+        for (let i = 0; i < 40; i++) {
+          const a = i / 40 * TAU + t * .03, l = 8 + 7 * (.5 + .5 * Math.sin(i * 7.3 + t * .9));
+          ctx.beginPath(); ctx.moveTo(...P(11, a)); ctx.lineTo(...P(11 + l, a)); ctx.stroke();
+        }
+        dot(ctx, CX, CY, 11.5, '#fdf1d8'); dot(ctx, CX, CY, 10.5, '#0c0c0c');
+        text(ctx, T.hhmm, CX, CY - 32, 'rgba(233,238,247,.92)');
+        moonHands(ctx, T, { lit: '#e9eef7', shade: 'rgba(233,238,247,.08)', edge: 'rgba(233,238,247,.25)', halo: 'rgba(233,238,247,.18)' });
+        secondPlanet(ctx, T, '#e9eef7', 'rgba(233,238,247,.85)', 'rgba(233,238,247,.25)');
+      },
+      corona(ctx, t, now) {
+        const T = angles(now);
+        glow(ctx, CX, CY, 125, 'rgba(200,140,60,.14)');
+        glow(ctx, CX - 30, CY - 20, 70, 'rgba(120,80,190,.18)');
+        glow(ctx, CX + 36, CY + 24, 60, 'rgba(60,130,190,.14)');
+        stars(ctx, t, '255,240,210', .6);
+        orbits(ctx, ['rgba(235,205,150,.42)', 'rgba(235,205,150,.36)', 'rgba(235,205,150,.30)']);
+        ticks(ctx, RM, 'rgba(240,215,160,.7)', 1.1);
+        corona(ctx, t, '255,200,110', 1.2, 56);
+        glow(ctx, CX, CY, 22, 'rgba(255,225,160,.5)', 10);
+        dot(ctx, CX, CY, 11.5, '#fff0cc'); dot(ctx, CX, CY, 10.5, '#0a0806');
+        // ダイヤモンドリング：1分で太陽の周りを1周
+        const [dx, dy] = P(11, T.s);
+        glow(ctx, dx, dy, 13, 'rgba(255,250,235,.85)');
+        ctx.strokeStyle = 'rgba(255,250,235,.55)'; ctx.lineWidth = .7;
+        ctx.beginPath(); ctx.moveTo(dx - 9, dy); ctx.lineTo(dx + 9, dy); ctx.moveTo(dx, dy - 9); ctx.lineTo(dx, dy + 9); ctx.stroke();
+        dot(ctx, dx, dy, 2, '#ffffff');
+        text(ctx, T.hhmm, CX, CY - 36, 'rgba(255,238,205,.95)');
+        moonHands(ctx, T, { lit: '#f6e3b8', shade: 'rgba(200,160,90,.16)', edge: 'rgba(246,227,184,.22)', halo: 'rgba(255,210,140,.25)' });
+        secondPlanet(ctx, T, '#fff6e2', 'rgba(255,235,195,.85)', 'rgba(255,220,160,.3)');
+      },
+      lunar(ctx, t, now) {
+        const T = angles(now);
+        nebula(ctx, t, ['rgba(70,90,190,.26)', 'rgba(120,100,220,.24)', 'rgba(70,170,210,.22)', 'rgba(180,120,220,.14)']);
+        stars(ctx, t, '235,240,255');
+        orbits(ctx, ['rgba(205,215,255,.42)', 'rgba(205,215,255,.36)', 'rgba(205,215,255,.30)']);
+        ticks(ctx, RM, 'rgba(220,228,255,.65)', 1.1);
+        glow(ctx, CX, CY, 40, 'rgba(225,230,255,.35)');
+        glow(ctx, CX, CY, 20, 'rgba(255,250,235,.7)');
+        dot(ctx, CX, CY, 10, '#fbf8ee');
+        dot(ctx, CX - 3, CY - 2, 2.6, 'rgba(190,195,215,.45)');
+        dot(ctx, CX + 3.5, CY + 2.5, 1.8, 'rgba(190,195,215,.4)');
+        dot(ctx, CX + 1, CY - 5, 1.2, 'rgba(190,195,215,.35)');
+        text(ctx, T.hhmm, CX, CY - 22, 'rgba(245,247,255,.95)');
+        moonHands(ctx, T, { lit: '#eef1fb', shade: 'rgba(120,130,190,.28)', edge: 'rgba(220,228,255,.22)', halo: 'rgba(210,220,255,.25)' });
+        secondPlanet(ctx, T, '#ffffff', 'rgba(255,255,255,.85)', 'rgba(230,235,255,.3)');
+      }
+    };
+  })();
+
+  // ════════════════════════════════════════════════════════════
+  //  白一色の月と魔法陣（第6〜9弾）
+  // ════════════════════════════════════════════════════════════
+  const WHITE = (() => {
+    const L = a => `rgba(255,255,255,${Math.max(0, Math.min(1, a))})`;
+    const clamp01 = x => Math.max(0, Math.min(1, x));
+    const easeOut = x => 1 - Math.pow(1 - clamp01(x), 3);
+    const easeIn = x => Math.pow(clamp01(x), 2);
+
+    function angles(now) {
+      const ms = now.getMilliseconds(), whole = now.getSeconds(), sec = whole + ms / 1000;
+      const minute = now.getMinutes(), min = minute + sec / 60, hr = (now.getHours() % 12) + min / 60;
+      const p = reduce ? 1 : ms / 1000, m = min / 60 * TAU + UP, age = lunarAge(now);
+      const bx = Math.min(1, p * 2.6), c = 1.9;
+      return {
+        h: hr / 12 * TAU + UP, m, s: sec / 60 * TAU + UP, sub: ms / 1000 * TAU + UP,
+        whole, sec, minute, p, snap: easeOut(p * 3.2), age,
+        back: 1 + (c + 1) * Math.pow(bx - 1, 3) + c * Math.pow(bx - 1, 2),
+        serial: Math.floor(now.getTime() / 1000), minuteSerial: Math.floor(now.getTime() / 60000),
+        minIllum: (1 - Math.cos(m - UP)) / 2, hourIllum: illumOfAge(age), hhmm: hhmmOf(now)
+      };
+    }
+
+    function circle(ctx, r, a, w = 1, x = CX, y = CY) { ctx.strokeStyle = L(a); ctx.lineWidth = w; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke(); }
+    function dot(ctx, x, y, r, a) { ctx.fillStyle = L(a); ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); }
+    function line(ctx, a1, a2, alpha, w = 1) { ctx.strokeStyle = L(alpha); ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(...a1); ctx.lineTo(...a2); ctx.stroke(); }
+    function glow(ctx, x, y, r, a, inner = 0) {
+      const g = ctx.createRadialGradient(x, y, inner, x, y, r);
+      g.addColorStop(0, L(a)); g.addColorStop(1, L(0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    }
+    function glowOn(ctx, b = 7) { ctx.save(); ctx.shadowColor = L(.9); ctx.shadowBlur = b; }
+    // 下の線を消して、印の周りに余白を作る（背景を塗らずに透過のまま抜く）
+    function knock(ctx, x, y, r) {
+      ctx.save(); ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.restore();
+    }
+    function knockRect(ctx, x, y, w, h) {
+      ctx.save(); ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = '#000'; ctx.fillRect(x - w / 2, y - h / 2, w, h); ctx.restore();
+    }
+    // 星形多角形 {n/k}。n と k の最大公約数の数だけ図形が重なる
+    function star(ctx, n, k, r, rot, alpha, w = 1) {
+      const g = (a, b) => b ? g(b, a % b) : a, parts = g(n, k);
+      ctx.strokeStyle = L(alpha); ctx.lineWidth = w;
+      for (let s = 0; s < parts; s++) {
+        ctx.beginPath();
+        for (let i = 0; i <= n / parts; i++) { const [x, y] = P(r, rot + (s + i * k) / n * TAU); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+        ctx.stroke();
+      }
+    }
+    function ticks(ctx, r1, r2, n, alpha, w = .8, rot = 0) {
+      ctx.strokeStyle = L(alpha); ctx.lineWidth = w; ctx.beginPath();
+      for (let i = 0; i < n; i++) { const a = rot + i / n * TAU; ctx.moveTo(...P(r1, a)); ctx.lineTo(...P(r2, a)); }
+      ctx.stroke();
+    }
+    function text(ctx, s, y) {
+      ctx.font = '12px Marcellus, "Hiragino Mincho ProN", "Yu Mincho", serif';
+      knockRect(ctx, CX, y, ctx.measureText(s).width + 10, 15);
+      ctx.fillStyle = L(.95); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(s, CX, y);
+    }
+    // 満ち欠けする月。dir の方向が光る側。illum は 0（新月）〜1（満月）
+    function phase(ctx, x, y, r, dir, illum, lit = .96, shade = .1, edge = .35) {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(dir);
+      dot(ctx, 0, 0, r, shade);
+      ctx.strokeStyle = L(edge); ctx.lineWidth = .6; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke();
+      const k = 1 - 2 * illum;
+      ctx.fillStyle = L(lit); ctx.beginPath();
+      ctx.arc(0, 0, r, -TAU / 4, TAU / 4);
+      ctx.ellipse(0, 0, Math.abs(k) * r, r, 0, TAU / 4, -TAU / 4, k > 0);
+      ctx.fill(); ctx.restore();
+    }
+    // 満月：白い光をまとい、クレーターの部分だけ少し透かす
+    function fullMoon(ctx, r, glowA = .35, x = CX, y = CY) {
+      glow(ctx, x, y, r * 3.6, glowA);
+      dot(ctx, x, y, r, .97);
+      ctx.save(); ctx.globalCompositeOperation = 'destination-out';
+      [[-.3, -.2, .28], [.35, .25, .2], [.1, -.5, .13]].forEach(([dx, dy, rr]) => {
+        ctx.fillStyle = 'rgba(0,0,0,.14)'; ctx.beginPath(); ctx.arc(x + dx * r, y + dy * r, rr * r, 0, TAU); ctx.fill();
+      });
+      ctx.restore();
+    }
+    // 月の針：時と分は満ち欠けする月（光る側は中心を向く）、秒はリング付きの星
+    function hands(ctx, T) {
+      for (const [r, a, size, illum] of [[RH, T.h, 11, T.hourIllum], [RM, T.m, 9.5, T.minIllum]]) {
+        const [x, y] = P(r, a);
+        knock(ctx, x, y, size + 2.5);
+        glow(ctx, x, y, size * (1.6 + illum * 1.2), .18);
+        phase(ctx, x, y, size, a + Math.PI, illum);
+      }
+      const [x, y] = P(RS, T.s);
+      knock(ctx, x, y, 10);
+      glow(ctx, x, y, 15, .28);
+      dot(ctx, x, y, 4.2, 1);
+      circle(ctx, 7.5, .85, 1.1, x, y);
+      dot(ctx, x + Math.cos(T.sub) * 7.5, y + Math.sin(T.sub) * 7.5, 1.9, 1);
+    }
+    // 魔法陣の印：時＝点入りの丸、分＝ひし形、秒＝光る点
+    function marks(ctx, T) {
+      const [hx, hy] = P(RH, T.h);
+      knock(ctx, hx, hy, 9.5); circle(ctx, 7, .95, 1.2, hx, hy); dot(ctx, hx, hy, 2.4, .95);
+      const [mx, my] = P(RM, T.m);
+      knock(ctx, mx, my, 8.5);
+      ctx.save(); ctx.translate(mx, my); ctx.rotate(T.m);
+      ctx.strokeStyle = L(.95); ctx.lineWidth = 1.2; ctx.beginPath();
+      ctx.moveTo(7, 0); ctx.lineTo(0, 4.5); ctx.lineTo(-7, 0); ctx.lineTo(0, -4.5); ctx.closePath(); ctx.stroke();
+      ctx.restore(); dot(ctx, mx, my, 1.4, .95);
+      const [sx, sy] = P(RS, T.s);
+      knock(ctx, sx, sy, 5.5);
+      glowOn(ctx, 8); dot(ctx, sx, sy, 3, 1); ctx.restore();
+    }
+    function baseRings(ctx) {
+      circle(ctx, RH, .7, 1); circle(ctx, RH - 5, .32, .7);
+      ticks(ctx, RH - 5, RH, 60, .28, .6);
+      ticks(ctx, RH - 5, RH, 12, .75, 1.1);
+      circle(ctx, RM, .6, 1); ticks(ctx, RM - 4, RM + 4, 12, .7, 1);
+    }
+    function sparkle(ctx, x, y, len, alpha) {
+      glow(ctx, x, y, len * 1.2, .45 * alpha);
+      line(ctx, [x - len, y], [x + len, y], .8 * alpha, .7); line(ctx, [x, y - len], [x, y + len], .8 * alpha, .7);
+      dot(ctx, x, y, 1.5, alpha);
+    }
+
+    // 星図の陣の星：半径20〜72の間に20個。角度順に並べて、順番に線でつなぐ
+    const skyStars = (() => {
+      const r = rng(2024), s = [];
+      for (let i = 0; i < 20; i++) {
+        const a = UP + (i + r() * .7) / 20 * TAU, rr = 20 + r() * 52;
+        s.push({ x: CX + Math.cos(a) * rr, y: CY + Math.sin(a) * rr, z: .6 + r() * .9, ph: r() * TAU });
+      }
+      return s;
+    })();
+    // 星生みの陣：分ごとに60個の星の位置と「いちばん近い星」を作り直す
+    let birthCache = { serial: -1 };
+    function birthSky(serial) {
+      if (birthCache.serial === serial) return birthCache;
+      const r = rng(serial * 131 + 17), pts = [], parent = [];
+      for (let i = 0; i < 60; i++) {
+        let x, y;
+        do { const a = r() * TAU, rr = 18 + Math.sqrt(r()) * 56; x = CX + Math.cos(a) * rr; y = CY + Math.sin(a) * rr; } while (Math.abs(x - CX) < 22 && y < CY - 12 && y > CY - 34);
+        let best = -1, bd = Infinity;
+        for (let j = 0; j < i; j++) { const d = Math.hypot(pts[j][0] - x, pts[j][1] - y); if (d < bd) { bd = d; best = j; } }
+        pts.push([x, y]); parent.push(best);
+      }
+      birthCache = { serial, pts, parent, dirs: pts.map(() => r() * TAU) };
+      return birthCache;
+    }
+
+    const styles = {
+      // #0908 水鏡の月：水平線の上の満月と、水面の月の光の道
+      reflection(ctx, t, T) {
+        baseRings(ctx);
+        circle(ctx, RS, .45, .8);
+        const horizon = CY + 14, hwid = Math.sqrt(RS * RS - 14 * 14);
+        line(ctx, [CX - hwid, horizon], [CX + hwid, horizon], .7, .9);
+        fullMoon(ctx, 8, .38, CX, CY - 8);
+        [[-30, -22], [26, -28], [-18, -36], [34, -6], [-38, 2]].forEach(([dx, dy], i) => dot(ctx, CX + dx, CY + dy, .9, .45 + .3 * Math.sin(t * 1.5 + i)));
+        ctx.save(); ctx.beginPath(); ctx.arc(CX, CY, RS - 1, 0, TAU); ctx.clip();
+        const r = rng(T.minuteSerial * 61 + T.whole * 7 + 3), wave = easeOut(T.p);
+        for (let row = 0; row < 9; row++) {
+          const y = horizon + 3 + row * 3.6, spread = 4 + row * 2.2;
+          for (let k = 0; k < 3; k++) {
+            const off = (r() - .5) * spread * 2, len = 2 + r() * (6 - row * .3);
+            const a = (.3 + .5 * r()) * (1 - row / 11), shimmer = .5 + .5 * Math.sin(t * 3 + row + k * 2);
+            line(ctx, [CX + off - len / 2, y], [CX + off + len / 2, y], a * (.6 + .4 * shimmer), .9);
+          }
+        }
+        // 毎秒、水面を左から右へ波が走る
+        const wx = CX - hwid + wave * hwid * 2;
+        glowOn(ctx, 4);
+        ctx.strokeStyle = L(.7 * (1 - T.p)); ctx.lineWidth = .8; ctx.beginPath();
+        for (let i = 0; i <= 20; i++) { const x = wx - 16 + i * 1.6, y = horizon + 6 + Math.sin(i / 20 * TAU) * 1.4; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+        ctx.stroke(); ctx.restore();
+        ctx.restore();
+        text(ctx, T.hhmm, CY - 28);
+        hands(ctx, T);
+      },
+
+      // #0902 星生みの陣：毎秒、流れ星が落ちて星が生まれ、いちばん近い星とつながる
+      starbirth(ctx, t, T) {
+        baseRings(ctx);
+        circle(ctx, RS, .3, .8);
+        const sky = birthSky(T.minuteSerial), n = T.whole;
+        for (let i = 1; i < n; i++) line(ctx, sky.pts[i], sky.pts[sky.parent[i]], .4, .75);
+        for (let i = 0; i < n; i++) dot(ctx, sky.pts[i][0], sky.pts[i][1], 1.3, .85);
+        const [x, y] = sky.pts[n], d = sky.dirs[n], fall = easeOut(T.p / .35);
+        if (T.p < .45) {
+          const len = 26, sx = x + Math.cos(d) * len * (1 - fall) + Math.cos(d) * 6, sy = y + Math.sin(d) * len * (1 - fall) + Math.sin(d) * 6;
+          glowOn(ctx, 5);
+          const g = ctx.createLinearGradient(sx + Math.cos(d) * 18, sy + Math.sin(d) * 18, sx, sy);
+          g.addColorStop(0, L(0)); g.addColorStop(1, L(.9 * (1 - T.p)));
+          ctx.strokeStyle = g; ctx.lineWidth = 1.1; ctx.beginPath(); ctx.moveTo(sx + Math.cos(d) * 18, sy + Math.sin(d) * 18); ctx.lineTo(sx, sy); ctx.stroke();
+          ctx.restore();
+        }
+        if (T.p >= .3) {
+          const k = easeOut((T.p - .3) / .4);
+          sparkle(ctx, x, y, 3 + 4 * (1 - k), 1);
+          if (n > 0) {
+            const [px, py] = sky.pts[sky.parent[n]];
+            glowOn(ctx, 5); line(ctx, [x, y], [x + (px - x) * k, y + (py - y) * k], .9, 1); ctx.restore();
+          }
+        }
+        fullMoon(ctx, 6.5, .3);
+        text(ctx, T.hhmm, CY - 22);
+        hands(ctx, T);
+      },
+
+      // #0801 月輪の陣：8つの月相が毎秒1つずつ光る
+      phasesigil(ctx, t, T) {
+        baseRings(ctx);
+        star(ctx, 6, 2, RM, UP, .42, .9);
+        circle(ctx, RS, .55, .9);
+        const lit = T.whole % 8;
+        for (let i = 0; i < 8; i++) {
+          const a = UP + i / 8 * TAU, [x, y] = P(66, a), ill = (1 - Math.cos(i / 8 * TAU)) / 2;
+          knock(ctx, x, y, 8);
+          if (i === lit) { glow(ctx, x, y, 16, .45 * (1 - T.p * .5)); phase(ctx, x, y, 6, i < 4 ? 0 : Math.PI, ill, 1, .18, .9); }
+          else { ctx.save(); ctx.globalAlpha = .55; phase(ctx, x, y, 6, i < 4 ? 0 : Math.PI, ill); ctx.restore(); }
+        }
+        fullMoon(ctx, 8.5, .3);
+        text(ctx, T.hhmm, CY - 24);
+        hands(ctx, T);
+      },
+
+      // #0806 星図の陣：毎秒、星から星へ線がつながり、20秒で星座が描き上がる
+      constellation(ctx, t, T) {
+        baseRings(ctx);
+        circle(ctx, RS, .3, .8);
+        const n = T.whole % 20;
+        for (let i = 0; i < n; i++) line(ctx, [skyStars[i].x, skyStars[i].y], [skyStars[i + 1].x, skyStars[i + 1].y], .45, .8);
+        if (n < 19) {
+          const a = skyStars[n], b = skyStars[n + 1], k = T.snap;
+          glowOn(ctx, 6); line(ctx, [a.x, a.y], [a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k], .95, 1.1); ctx.restore();
+        }
+        skyStars.forEach((s, i) => {
+          const tw = .5 + .5 * Math.sin(t * 1.3 * s.z + s.ph), on = i <= n + 1;
+          dot(ctx, s.x, s.y, on ? 1.5 : 1, on ? .95 : .35 + .3 * tw);
+          if (i === n + 1) glow(ctx, s.x, s.y, 8, .6 * T.snap);
+        });
+        fullMoon(ctx, 7, .3);
+        text(ctx, T.hhmm, CY - 20);
+        hands(ctx, T);
+      },
+
+      // #0805 三日月の門：大小の三日月が毎秒30°ずつ逆向きに回る
+      crescentgate(ctx, t, T) {
+        baseRings(ctx);
+        star(ctx, 3, 1, RS, UP, .45, .9); star(ctx, 3, 1, RS, UP + Math.PI, .2, .7);
+        circle(ctx, RS, .55, .9);
+        const step = (T.whole + T.snap) / 12 * TAU;
+        const crescent = (R, off, a, alpha) => {
+          const ix = CX + Math.cos(a) * off, iy = CY + Math.sin(a) * off, r2 = R - 3;
+          ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.arc(ix, iy, r2, 0, TAU, true); ctx.clip();
+          circle(ctx, R, alpha, 1); ctx.restore();
+          ctx.save(); ctx.beginPath(); ctx.arc(CX, CY, R, 0, TAU); ctx.clip();
+          circle(ctx, r2, alpha, 1, ix, iy); ctx.restore();
+        };
+        crescent(68, 12, UP + step, .75);
+        crescent(36, 8, UP + Math.PI - step, .75);
+        const pulse = 1 - T.p;
+        glow(ctx, CX, CY, 22 + 6 * pulse, .3 + .3 * pulse);
+        dot(ctx, CX, CY, 6.5, .97);
+        text(ctx, T.hhmm, CY - 58);
+        hands(ctx, T);
+      },
+
+      // #0808 月の雫：毎秒、光の雫が満月に落ちて二重の波紋が広がる
+      moondrop(ctx, t, T) {
+        baseRings(ctx);
+        circle(ctx, RS, .55, .9);
+        star(ctx, 6, 1, 30, UP + t * .05, .3, .7);
+        const fall = easeIn(T.p / .45), topY = CY - RS + 4, moonTop = CY - 9;
+        if (T.p < .45) {
+          const y = topY + (moonTop - topY) * fall;
+          glowOn(ctx, 6);
+          ctx.fillStyle = L(.95); ctx.beginPath();
+          ctx.moveTo(CX, y - 6); ctx.quadraticCurveTo(CX + 3, y - 1, CX, y + 2.5); ctx.quadraticCurveTo(CX - 3, y - 1, CX, y - 6); ctx.fill();
+          ctx.restore();
+        } else {
+          const q = (T.p - .45) / .55;
+          glowOn(ctx, 5);
+          circle(ctx, 9 + (RS - 13) * easeOut(q), .85 * (1 - q), 1.1);
+          circle(ctx, 9 + (RS - 13) * easeOut(q) * .6, .6 * (1 - q), .8);
+          ctx.restore();
+        }
+        fullMoon(ctx, 9, .38);
+        text(ctx, T.hhmm, CY + 24);
+        hands(ctx, T);
+      },
+
+      // #0704 花の陣：生命の種の花びらが毎秒1枚ずつ光る
+      flower(ctx, t, T) {
+        circle(ctx, RH, .75, 1); circle(ctx, RH - 5, .35, .7);
+        ticks(ctx, RH - 5, RH, 12, .8, 1);
+        circle(ctx, RM, .7, 1);
+        star(ctx, 6, 1, RM, UP, .45, .9);
+        star(ctx, 12, 5, 70, UP, .18, .7);
+        circle(ctx, RS, .75, 1);
+        const r = 16, rot = UP + t * .03, lit = T.whole % 6;
+        circle(ctx, r, .5, .9);
+        for (let i = 0; i < 6; i++) {
+          const a = rot + i / 6 * TAU, x = CX + Math.cos(a) * r, y = CY + Math.sin(a) * r;
+          if (i === lit) { glowOn(ctx, 8); circle(ctx, r, .5 + .5 * (1 - T.p * .5), 1.3, x, y); ctx.restore(); }
+          else circle(ctx, r, .35, .8, x, y);
+        }
+        circle(ctx, r * 2, .6, .9);
+        text(ctx, T.hhmm, CY - 40);
+        marks(ctx, T);
+      },
+
+      // #0706 雷の陣：毎秒、秒の印から中心へ稲妻が落ちる。形は毎秒変わる
+      lightning(ctx, t, T) {
+        circle(ctx, RH, .75, 1); circle(ctx, RH - 5, .35, .7);
+        ticks(ctx, RH - 5, RH, 12, .8, 1.1);
+        circle(ctx, RM, .7, 1); ticks(ctx, RM - 4, RM + 4, 12, .75, 1);
+        star(ctx, 6, 2, RM, UP, .35, .9);
+        circle(ctx, RS, .7, 1);
+        circle(ctx, 12, .8, 1); star(ctx, 3, 1, 12, UP, .5, .8);
+        const r = rng(T.serial * 31 + 7), [sx, sy] = P(RS, T.s), [ex, ey] = P(12, T.s);
+        const nx = -(ey - sy), ny = ex - sx, len = Math.hypot(nx, ny) || 1;
+        const pts = [[sx, sy]];
+        for (let i = 1; i < 7; i++) {
+          const f = i / 7, j = (r() - .5) * 12;
+          pts.push([sx + (ex - sx) * f + nx / len * j, sy + (ey - sy) * f + ny / len * j]);
+        }
+        pts.push([ex, ey]);
+        const shown = Math.ceil(pts.length * clamp01(T.p * 6)), fade = 1 - easeOut(T.p * 1.4);
+        glowOn(ctx, 9);
+        ctx.strokeStyle = L(fade); ctx.lineWidth = 1.4; ctx.beginPath();
+        pts.slice(0, shown).forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+        ctx.stroke();
+        if (shown > 4) {
+          const [bx, by] = pts[3], bj = (r() - .5) * 26;
+          line(ctx, [bx, by], [bx + (ex - sx) * .25 + nx / len * bj, by + (ey - sy) * .25 + ny / len * bj], fade * .7, .9);
+        }
+        if (shown === pts.length) circle(ctx, 12 + 10 * T.snap, fade * .8, 1);
+        ctx.restore();
+        dot(ctx, CX, CY, 2, .9);
+        text(ctx, T.hhmm, CY - 25);
+        marks(ctx, T);
+      },
+
+      // #0602 七星の陣：60区画の輪が毎秒1つずつ灯り、1分で満ちる
+      heptagram(ctx, t, T) {
+        circle(ctx, RH, .75, 1); circle(ctx, RH + 6, .35, .7);
+        for (let i = 0; i < 12; i++) { const [x, y] = P(RH + 6, i / 12 * TAU); knock(ctx, x, y, 3.5); circle(ctx, 2.4, .6, .8, x, y); }
+        circle(ctx, RM, .7, 1);
+        ticks(ctx, RM - 4, RM + 4, 12, .75, 1);
+        star(ctx, 7, 3, RM, UP + t * .02, .7, 1);
+        star(ctx, 7, 2, RM * .62, UP - t * .03, .35, .8);
+        const R = 64;
+        for (let i = 0; i < 60; i++) {
+          const a0 = UP + i / 60 * TAU + .012, a1 = UP + (i + 1) / 60 * TAU - .012;
+          let alpha = i < T.whole ? .75 : .12;
+          if (i === T.whole) alpha = .12 + .88 * T.snap;
+          ctx.strokeStyle = L(alpha); ctx.lineWidth = i === T.whole ? 3 : 2.2;
+          if (i === T.whole) { ctx.save(); ctx.shadowColor = L(.9); ctx.shadowBlur = 8 * (1 - T.p) + 2; }
+          ctx.beginPath(); ctx.arc(CX, CY, R, a0, a1); ctx.stroke();
+          if (i === T.whole) ctx.restore();
+        }
+        circle(ctx, RS, .7, 1);
+        circle(ctx, 14, .7, .9); star(ctx, 7, 3, 14, UP, .5, .7);
+        text(ctx, T.hhmm, CY - 26);
+        marks(ctx, T);
+      }
+    };
+
+    // 各スタイルは (ctx, t, now) で呼べるようにそろえる
+    const out = {};
+    for (const [k, fn] of Object.entries(styles)) out[k] = (ctx, t, now) => fn(ctx, t, angles(now));
+    return out;
+  })();
+
+  // ════════════════════════════════════════════════════════════
+  //  スタイルの登録（名前・シード番号・明るい背景用の夜空の色）
+  // ════════════════════════════════════════════════════════════
+  const NIGHT = '#101014';
+  const STYLES = {
+    reflection:    { seed: '0908', sky: NIGHT, draw: WHITE.reflection },
+    starbirth:     { seed: '0902', sky: NIGHT, draw: WHITE.starbirth },
+    phasesigil:    { seed: '0801', sky: NIGHT, draw: WHITE.phasesigil },
+    constellation: { seed: '0806', sky: NIGHT, draw: WHITE.constellation },
+    crescentgate:  { seed: '0805', sky: NIGHT, draw: WHITE.crescentgate },
+    moondrop:      { seed: '0808', sky: NIGHT, draw: WHITE.moondrop },
+    flower:        { seed: '0704', sky: NIGHT, draw: WHITE.flower },
+    lightning:     { seed: '0706', sky: NIGHT, draw: WHITE.lightning },
+    heptagram:     { seed: '0602', sky: NIGHT, draw: WHITE.heptagram },
+    nebula:        { seed: '0501', sky: '#120f24', draw: MOON.nebula },
+    eclipse:       { seed: '0502', sky: '#0e0e10', draw: MOON.eclipse },
+    corona:        { seed: '0503', sky: '#141009', draw: MOON.corona },
+    lunar:         { seed: '0504', sky: '#0f1224', draw: MOON.lunar }
+  };
+  function pickStyle(q) {
+    const key = (q || '').trim().toLowerCase().replace(/^#/, '');
+    return STYLES[key] || Object.values(STYLES).find(s => s.seed === key) || STYLES.nebula;
+  }
+
+  // 明るい背景用：時計の後ろに、縁がぼやけた夜空の円を敷く
+  function skyDisc(ctx, color) {
+    const g = ctx.createRadialGradient(CX, CY, 0, CX, CY, 124);
+    g.addColorStop(0, color); g.addColorStop(.86, color); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(CX, CY, 124, 0, TAU); ctx.fill();
+  }
+
+  // 確認用の早送り（gallery.html から使う）。&speed=倍率&from=開始時刻(ms) で時刻を進める
+  const speed = Math.max(1, Number(params.get('speed')) || 1);
+  const loadedAt = Date.now(), from = Number(params.get('from')) || loadedAt;
+  const clockNow = () => new Date(from + (Date.now() - loadedAt) * speed);
+
+  const style = pickStyle(params.get('style'));
+  const canvas = document.getElementById('clock'), ctx = canvas.getContext('2d');
+  // 時計はいったん別のキャンバスに描いてから重ねる。
+  // 印の周りを透かす処理が、明るい背景用の夜空の円まで抜いてしまわないようにするため
+  const layer = document.createElement('canvas'), lctx = layer.getContext('2d');
+
+  // 埋め込み枠いっぱいに、縦横比を保ったまま拡大・縮小する
+  let scale = 1, lastLabel = '';
+  function size() {
+    const dpr = Math.min(devicePixelRatio || 1, 3);
+    const fit = Math.min(innerWidth / W, innerHeight / H) || 1;
+    canvas.style.width = W * fit + 'px'; canvas.style.height = H * fit + 'px';
+    canvas.width = layer.width = Math.round(W * fit * dpr);
+    canvas.height = layer.height = Math.round(H * fit * dpr);
+    scale = fit * dpr;
+  }
+  function frame(ts) {
+    const now = clockNow(), t = reduce ? 0 : ts / 1000;
+    lctx.setTransform(scale, 0, 0, scale, 0, 0);
+    lctx.clearRect(0, 0, W, H);
+    style.draw(lctx, t, now);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (isLight()) { ctx.setTransform(scale, 0, 0, scale, 0, 0); skyDisc(ctx, style.sky); ctx.setTransform(1, 0, 0, 1, 0, 0); }
+    ctx.drawImage(layer, 0, 0);
+    const label = hhmmOf(now);
+    if (label !== lastLabel) { lastLabel = label; canvas.setAttribute('aria-label', `時計 ${label}`); }
+    reduce && speed === 1 ? setTimeout(() => requestAnimationFrame(frame), 1000) : requestAnimationFrame(frame);
+  }
+  addEventListener('resize', size);
+  size(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

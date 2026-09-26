@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>星の時計 ギャラリー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Marcellus&family=Zen+Kaku+Gothic+New:wght@400;500&display=swap">
+<!--
+  時計を並べて眺めるページ。時計は index.html を iframe で読み込むので、
+  index.html を直せばここにも自動で反映される。デザインを増やすときは下の DESIGNS に足す。
+-->
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #181818;
+    --line: #2a2a2e;
+    --ink: #e8e6ef;
+    --mute: #8f8c9e;
+    --gold: #f0d49a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.7 "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
+    padding-inline: 16px; padding-block: 48px 64px;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; display: grid; gap: 32px; }
+  header { display: grid; gap: 8px; max-width: 66ch; }
+  h1 { font: 400 clamp(30px, 5vw, 40px)/1.2 "Marcellus", "Zen Kaku Gothic New", serif; letter-spacing: .05em; margin: 0; text-wrap: balance; }
+  header p { margin: 0; color: var(--mute); }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; padding-block: 14px; border-block: 1px solid var(--line); }
+  .moonnow { display: grid; }
+  .moonnow small { font-size: 12px; color: var(--mute); letter-spacing: .08em; }
+  .moonnow strong { font: 400 18px/1.4 "Marcellus", "Zen Kaku Gothic New", serif; font-variant-numeric: tabular-nums; }
+  .speed { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+  .speed span { font-size: 12px; color: var(--mute); margin-right: 4px; }
+  button {
+    font: inherit; font-size: 13px; color: var(--ink); background: transparent; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px;
+  }
+  button[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
+  button:hover { border-color: #4a4852; }
+  button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  .simtime { font-size: 12px; color: var(--mute); font-variant-numeric: tabular-nums; width: 100%; text-align: right; min-height: 1.7em; }
+  section { display: grid; gap: 20px; }
+  h2.group { margin: 0; font: 500 13px/1.4 "Zen Kaku Gothic New", sans-serif; letter-spacing: .14em; color: var(--mute); padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 40px 28px; }
+  .card { display: grid; gap: 12px; align-content: start; }
+  .stage { width: 316px; max-width: 100%; aspect-ratio: 316 / 262; margin-inline: auto; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; background: transparent; }
+  .meta { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .meta h3 { margin: 0; font: 400 19px/1.3 "Marcellus", "Zen Kaku Gothic New", serif; letter-spacing: .03em; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .meta h3 code { font: 12px/1 ui-monospace, "Cascadia Code", Consolas, monospace; color: var(--mute); align-self: center; }
+  .meta p { margin: 0; color: var(--mute); font-size: 14px; }
+  .url { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .url code {
+    flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
+    font: 12px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace; color: var(--ink);
+    background: #ffffff08; border-radius: 4px; padding: 4px 8px; user-select: all;
+  }
+  .url button { flex: none; font-size: 12px; padding: 3px 10px; }
+  footer { border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 6px; font-size: 14px; color: var(--mute); max-width: 66ch; }
+  footer b { color: var(--ink); font-weight: 500; }
+  footer code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; color: var(--ink); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>星の時計</h1>
+    <p>Notionに埋め込む時計を並べて眺めるページです。どの時計も現在時刻で動いています。URLのコピーボタンで、そのままNotionの埋め込みに使えます。</p>
+  </header>
+
+  <div class="bar">
+    <div class="moonnow"><small>今日の月（時の月に表示中）</small><strong id="moonLabel">―</strong></div>
+    <div class="speed" role="group" aria-label="再生速度">
+      <span>早送り</span>
+      <button id="sp1" type="button" data-speed="1" aria-pressed="true">等速</button>
+      <button id="sp60" type="button" data-speed="60" aria-pressed="false">60倍</button>
+      <button id="sp2880" type="button" data-speed="2880" aria-pressed="false">1日＝30秒</button>
+    </div>
+    <div class="simtime" id="simTime"></div>
+  </div>
+
+  <div id="sections"></div>
+
+  <footer>
+    <div><b>埋め込みURLの形</b></div>
+    <div><code>https://usa7se.github.io/orbit-clock/?style=名前</code>（名前の代わりにシード番号でも可。例：<code>?style=0908</code>）</div>
+    <div>配色は見る人の端末の設定に自動で合わせます。固定したいときは <code>&amp;theme=dark</code> か <code>&amp;theme=light</code> を付けます。</div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const BASE = 'https://usa7se.github.io/orbit-clock/';
+  const DESIGNS = [
+    { group: '白一色の月と魔法陣', items: [
+      ['reflection', '0908', '水鏡の月', '水平線の上の満月と、水面に映る月の光の道。毎秒、水面を波が走ります。'],
+      ['starbirth', '0902', '星生みの陣', '毎秒、流れ星が落ちて星が生まれ、いちばん近い星とつながります。'],
+      ['phasesigil', '0801', '月輪の陣', '六芒星を囲む8つの月相が、毎秒1つずつ順に光ります。'],
+      ['constellation', '0806', '星図の陣', '毎秒、星から星へ線がつながり、20秒で星座が描き上がります。'],
+      ['crescentgate', '0805', '三日月の門', '大小の三日月が毎秒30°ずつ逆向きに回り、門の中の月が脈打ちます。'],
+      ['moondrop', '0808', '月の雫', '毎秒、光の雫が満月に落ちて、二重の波紋が広がります。'],
+      ['flower', '0704', '花の陣', '生命の種の花びらが、毎秒1枚ずつ光ります。'],
+      ['lightning', '0706', '雷の陣', '毎秒、秒の印から中心へ稲妻が落ちます。形は毎回変わります。'],
+      ['heptagram', '0602', '七星の陣', '60区画の輪が毎秒1つずつ灯り、1分で円が満ちます。']
+    ] },
+    { group: '色つきの月（第5弾）', items: [
+      ['nebula', '0501', '満月の星雲', '紫と青の星雲の中心に、金色の光をまとった満月。'],
+      ['eclipse', '0502', '日食', '黒い太陽から金色のコロナが差す、銀色のモノトーン。'],
+      ['corona', '0503', '黄金のコロナ', '強い後光の縁で、ダイヤモンドリングの光が1分で1周します。'],
+      ['lunar', '0504', '満月と満ち欠け', '青みのある星雲の中心に、白く光る満月。']
+    ] }
+  ];
+  const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  document.getElementById('sections').innerHTML = DESIGNS.map(g => `
+    <section>
+      <h2 class="group">${esc(g.group)}</h2>
+      <div class="grid">${g.items.map(([key, seed, name, desc]) => `
+        <article class="card">
+          <div class="stage"><iframe data-style="${key}" title="${esc(name)}" loading="lazy"></iframe></div>
+          <div class="meta">
+            <h3><code>#${seed}</code>${esc(name)}</h3>
+            <p>${esc(desc)}</p>
+            <div class="url"><code>${BASE}?style=${key}</code><button type="button" id="copy-${key}">コピー</button></div>
+          </div>
+        </article>`).join('')}
+      </div>
+    </section>`).join('');
+
+  // 月齢の計算は index.html と同じ基準を使う
+  const TAU = Math.PI * 2, SYNODIC = 29.530588853, NEW_MOON_REF = Date.UTC(2000, 0, 6, 18, 14);
+  const lunarAge = d => ((((d - NEW_MOON_REF) / 864e5) % SYNODIC) + SYNODIC) % SYNODIC;
+  const illumOfAge = age => (1 - Math.cos(age / SYNODIC * TAU)) / 2;
+  function moonName(age) {
+    const names = [[1.8, '新月'], [5.5, '三日月'], [9.2, '上弦の月'], [12.9, '十三夜'], [16.6, '満月'], [20.3, '寝待月'], [24, '下弦の月'], [27.7, '有明月'], [30, '新月']];
+    return names.find(([lim]) => age < lim)[1];
+  }
+
+  // 早送り：表示時刻を実時間から切り離して進め、時計にも同じ開始時刻と倍率を渡す
+  let speed = 1, baseReal = Date.now(), baseSim = baseReal;
+  const simNow = () => new Date(baseSim + (Date.now() - baseReal) * speed);
+  const frames = [...document.querySelectorAll('iframe[data-style]')];
+  function loadFrames() {
+    for (const f of frames) {
+      // このページは常にダークなので、時計もダークに固定する（配色が食い違うと背景が塗られるため）
+      const q = `style=${f.dataset.style}&theme=dark` + (speed === 1 ? '' : `&speed=${speed}&from=${baseSim}`);
+      f.src = `index.html?${q}`;
+    }
+  }
+  const buttons = [...document.querySelectorAll('.speed button')];
+  for (const b of buttons) b.addEventListener('click', () => {
+    const now = Date.now(), cur = simNow().getTime();
+    speed = Number(b.dataset.speed);
+    // 等速に戻したら現在時刻に戻す
+    baseReal = now; baseSim = speed === 1 ? now : cur;
+    for (const o of buttons) o.setAttribute('aria-pressed', String(o === b));
+    loadFrames();
+  });
+
+  // URLのコピー
+  document.addEventListener('click', async e => {
+    const b = e.target.closest('.url button');
+    if (!b) return;
+    const code = b.previousElementSibling;
+    try { await navigator.clipboard.writeText(code.textContent); b.textContent = 'コピーしました'; }
+    catch { getSelection().selectAllChildren(code); b.textContent = '選択しました'; }
+    setTimeout(() => { b.textContent = 'コピー'; }, 1600);
+  });
+
+  const moonLabel = document.getElementById('moonLabel'), simTime = document.getElementById('simTime');
+  function tick() {
+    const now = simNow(), age = lunarAge(now);
+    moonLabel.textContent = `${moonName(age)}（月齢 ${age.toFixed(1)}・${Math.round(illumOfAge(age) * 100)}%）`;
+    simTime.textContent = speed === 1 ? '' : `表示中の時刻：${now.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+  }
+  loadFrames(); tick(); setInterval(tick, 250);
+})();
+</script>
+</body>
+</html>
