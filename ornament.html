@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- index.html と同じく、埋め込み先と color-scheme を合わせて iframe の背景を透過のまま保つ -->
+<meta name="color-scheme" content="light dark">
+<script>
+  (() => {
+    const t = new URLSearchParams(location.search).get('theme');
+    if (t === 'dark' || t === 'light') document.querySelector('meta[name="color-scheme"]').content = t;
+  })();
+</script>
+<title>星のワンポイント</title>
+<!--
+  星のワンポイント — Notion ページに置く小さな飾り（星の時計の姉妹品）
+
+  ?w= に名前か番号を指定する。例：?w=mirror または ?w=02
+    区切り線（横幅いっぱい。埋め込みの高さは 60〜90px くらい）
+      phase          01  満ち欠けの線   今日の月齢に近い月が光る
+      mirror         02  水鏡の線       星が1分かけて渡り、毎秒波紋
+      meteor         03  流れ星の線     中央の✦と、6秒おきの流れ星
+      constellation  04  星座の線       15秒ごとに新しい星座を結ぶ
+    丸い飾り（正方形。160px くらい〜）
+      moonmirror     06  水鏡の月       今日の形の月と光の道
+      starclock      07  小さな星の水鏡 時刻つき
+    縦長の飾り（幅:高さ＝1:3）
+      hanging        14  吊るし星
+
+  &theme=dark / &theme=light で配色を固定（省略時は見る人の端末の設定に合わせる。ライトでは墨色で描く）
+  軽さのために：毎秒30コマまで、画面の外にある間とタブが裏にある間は描かない。
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: transparent !important; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="星の飾り"></canvas>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const ALIAS = { '01': 'phase', '02': 'mirror', '03': 'meteor', '04': 'constellation', '06': 'moonmirror', '07': 'starclock', '14': 'hanging' };
+  const LABEL = { phase: '満ち欠けの線', mirror: '水鏡の線', meteor: '流れ星の線', constellation: '星座の線', moonmirror: '水鏡の月', starclock: '小さな星の水鏡', hanging: '吊るし星' };
+  const raw = (params.get('w') || 'mirror').toLowerCase(), name = ALIAS[raw] || (LABEL[raw] ? raw : 'mirror');
+  const fixedTheme = ['dark', 'light'].includes(params.get('theme')) ? params.get('theme') : null;
+  const prefersLight = matchMedia('(prefers-color-scheme: light)');
+  const isLight = () => fixedTheme ? fixedTheme === 'light' : prefersLight.matches;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+  canvas.setAttribute('aria-label', LABEL[name]);
+  if (name === 'starclock') {
+    const l = document.createElement('link'); l.rel = 'stylesheet';
+    l.href = 'https://fonts.googleapis.com/css2?family=Marcellus&display=swap'; document.head.appendChild(l);
+  }
+
+  const TAU = Math.PI * 2, UP = -TAU / 4;
+  const SYN = 29.530588853, NEW_REF = Date.UTC(2000, 0, 6, 18, 14);
+  const lunarAge = d => ((((d - NEW_REF) / 864e5) % SYN) + SYN) % SYN;
+  // 描く色：ダークは白、ライトは Notion の文字色に近い墨色。光のにじみはライトでは控えめに
+  let INK = '255,255,255', GLOW = 1;
+  const L = a => `rgba(${INK},${Math.max(0, Math.min(1, a))})`;
+  const clamp01 = x => Math.max(0, Math.min(1, x));
+  const easeOut = x => 1 - Math.pow(1 - clamp01(x), 3);
+  function rng(seed) { seed = (Math.abs(Math.floor(seed)) % 2147483646) + 1; return () => (seed = (seed * 16807) % 2147483647) / 2147483647; }
+
+  function dot(x, y, r, a) { ctx.fillStyle = L(a); ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); }
+  function circle(x, y, r, a, w = 1) { ctx.strokeStyle = L(a); ctx.lineWidth = w; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke(); }
+  function line(x1, y1, x2, y2, a, w = 1) { ctx.strokeStyle = L(a); ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+  function glow(x, y, r, a) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, L(a * GLOW)); g.addColorStop(1, L(0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+  }
+  function knock(x, y, r) { ctx.save(); ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.restore(); }
+  function glowOn(b = 6) { ctx.save(); ctx.shadowColor = L(.9 * GLOW); ctx.shadowBlur = b; }
+  function fadeLine(w, y, a, gap = 0) {
+    const g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, L(0)); g.addColorStop(.18, L(a)); g.addColorStop(.82, L(a)); g.addColorStop(1, L(0));
+    ctx.strokeStyle = g; ctx.lineWidth = 1; ctx.beginPath();
+    if (gap) { ctx.moveTo(0, y); ctx.lineTo(w / 2 - gap, y); ctx.moveTo(w / 2 + gap, y); ctx.lineTo(w, y); }
+    else { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
+  }
+  const edge = (x, w) => clamp01(Math.min(x, w - x) / (w * .16));
+  function sparkle(x, y, len, a) {
+    glow(x, y, len * 1.3, .45 * a);
+    line(x - len, y, x + len, y, .8 * a, .7); line(x, y - len, x, y + len, .8 * a, .7);
+    dot(x, y, 1.3, a);
+  }
+  function star4(x, y, R, r, a, rot = 0) {
+    ctx.fillStyle = L(a); ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const p = UP + rot + i * TAU / 4, p2 = p + TAU / 8;
+      ctx.lineTo(x + Math.cos(p) * R, y + Math.sin(p) * R);
+      ctx.quadraticCurveTo(x + Math.cos(p2) * r, y + Math.sin(p2) * r, x + Math.cos(p + TAU / 4) * R, y + Math.sin(p + TAU / 4) * R);
+    }
+    ctx.fill();
+  }
+  // 月齢どおりの月。満ちていく間は右が、欠けていく間は左が光る。
+  // ダークは光る側を白で塗る。ライトは影の側を墨で塗り、光る側は白く残して輪郭を描く（墨で満月を塗ると黒い玉に見えるため）
+  function moon(x, y, r, age, craters = false) {
+    const illum = (1 - Math.cos(age / SYN * TAU)) / 2, dir = age < SYN / 2 ? 0 : Math.PI, light = GLOW < 1;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(dir);
+    const k = 1 - 2 * illum, litPath = () => {
+      ctx.beginPath(); ctx.arc(0, 0, r, -TAU / 4, TAU / 4);
+      ctx.ellipse(0, 0, Math.abs(k) * r, r, 0, TAU / 4, -TAU / 4, k > 0);
+    };
+    if (light) {
+      dot(0, 0, r, .62);
+      ctx.fillStyle = '#fff'; litPath(); ctx.fill();
+    } else {
+      dot(0, 0, r, .08);
+      ctx.fillStyle = L(.96); litPath(); ctx.fill();
+    }
+    if (craters) {
+      ctx.save(); litPath(); ctx.clip(); ctx.rotate(-dir);
+      if (!light) ctx.globalCompositeOperation = 'destination-out';
+      [[-.3, -.2, .26], [.35, .25, .18], [.1, -.5, .12], [-.1, .45, .1]].forEach(([dx, dy, rr]) => {
+        ctx.fillStyle = light ? L(.1) : 'rgba(0,0,0,.13)'; ctx.beginPath(); ctx.arc(dx * r, dy * r, rr * r, 0, TAU); ctx.fill();
+      });
+      ctx.restore();
+    }
+    ctx.strokeStyle = L(light ? .6 : .3); ctx.lineWidth = .6; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke();
+    ctx.restore();
+  }
+  const twinkles = (seed, n) => { const r = rng(seed); return Array.from({ length: n }, () => ({ x: r(), y: r(), z: .3 + r() * .7, ph: r() * TAU })); };
+  const TW1 = twinkles(11, 22), TW2 = twinkles(22, 44), TW3 = twinkles(33, 26), TW4 = twinkles(44, 20);
+
+  // 形ごとの描き方。kind：line＝横長（高さはdesignHを中心に使う）、square＝正方形（160基準）、tall＝1:3（100基準）
+  const W = {
+    phase: { kind: 'line', designH: 44, draw(w, h, t, now) {
+      const y = h / 2, age = lunarAge(now);
+      fadeLine(w, y, .4);
+      for (const s of TW1) {
+        const sy = 4 + s.y * (h - 8); if (Math.abs(sy - y) < 6) continue;
+        dot(s.x * w, sy, .6 * s.z + .2, (.12 + .25 * (.5 + .5 * Math.sin(t * 1.2 + s.ph))) * s.z * edge(s.x * w, w));
+      }
+      const span = Math.min(w - 48, 520), today = Math.round(age / SYN * 8);
+      for (let i = 0; i <= 8; i++) {
+        const x = w / 2 - span / 2 + i * span / 8, on = i === today || (today === 8 && i === 0) || (today === 0 && i === 8);
+        const r = on ? 6 : 4.2;
+        knock(x, y, r + 4);
+        if (on) glow(x, y, 16, .22 + .06 * Math.sin(t * 1.5));
+        ctx.globalAlpha = on ? 1 : .7; moon(x, y, r, i / 8 * SYN); ctx.globalAlpha = 1;
+      }
+    } },
+
+    mirror: { kind: 'line', designH: 60, draw(w, h, t, now) {
+      const hz = Math.round(h * .46) + .5, sec = now.getSeconds() + now.getMilliseconds() / 1000, p = now.getMilliseconds() / 1000;
+      fadeLine(w, hz, .55);
+      for (const s of TW2) {
+        const x = s.x * w, y = 3 + s.y * (hz - 8), e = edge(x, w), tw = .5 + .5 * Math.sin(t * 1.3 * s.z + s.ph);
+        dot(x, y, .5 + .4 * s.z, (.15 + .35 * tw) * s.z * e);
+        const ry = hz + (hz - y) * .7, wob = Math.sin(t * 2 + s.ph + ry * .4) * 1.2;
+        line(x - 1.3 + wob, ry, x + 1.3 + wob, ry, .14 * s.z * e, .8);
+      }
+      const th = sec / 60 * Math.PI, sx = w * (.1 + .8 * sec / 60), sy = hz - (hz - 7) * Math.sin(th), lift = clamp01(Math.sin(th) * 4) * edge(sx, w * 1.1);
+      sparkle(sx, sy, 4 + 1.5 * lift, .35 + .65 * lift);
+      const my = hz + (hz - sy) * .7;
+      for (let row = 0; row < 5; row++) {
+        const y = hz + 3 + row * ((my - hz) / 4 + .3), len = (2 + row * .7) * (.6 + .4 * Math.sin(t * 3 + row * 1.7)), off = Math.sin(t * 2.3 + row * 2.1) * (1 + row * .4);
+        line(sx + off - len, y, sx + off + len, y, (.5 - row * .06) * lift, .9);
+      }
+      const q = easeOut(p), rx = 2 + 20 * q;
+      ctx.strokeStyle = L(.6 * (1 - q) * lift); ctx.lineWidth = .8; ctx.beginPath(); ctx.ellipse(sx, my, rx, rx * .22, 0, 0, TAU); ctx.stroke();
+    } },
+
+    meteor: { kind: 'line', designH: 44, draw(w, h, t) {
+      const y = h / 2, cx = w / 2;
+      fadeLine(w, y, .4, 18);
+      for (const s of TW3) {
+        const sy = 3 + s.y * (h - 6); if (Math.abs(s.x * w - cx) < 26) continue;
+        dot(s.x * w, sy, .5 + .4 * s.z, (.1 + .25 * (.5 + .5 * Math.sin(t * 1.1 + s.ph))) * s.z * edge(s.x * w, w));
+      }
+      const b = 1 + .12 * Math.sin(t * 1.2);
+      glow(cx, y, 18 * b, .25);
+      star4(cx, y, 7 * b, 1.6 * b, .95);
+      dot(cx - 24, y, 1.1, .55); dot(cx + 24, y, 1.1, .55);
+      const period = 6, k = Math.floor(t / period), q = (t % period) / 1.1;
+      if (q < 1) {
+        const r2 = rng(k * 31 + 7), x0 = w * (.55 + r2() * .35), x1 = x0 - w * (.25 + r2() * .15), y0 = 3 + r2() * 5, y1 = y0 + 9 + r2() * 6;
+        const e = easeOut(q), hx = x0 + (x1 - x0) * e, hy = y0 + (y1 - y0) * e, fade = Math.sin(q * Math.PI);
+        const tx = hx + (x0 - x1) * .35, ty = hy + (y0 - y1) * .35;
+        const g = ctx.createLinearGradient(hx, hy, tx, ty); g.addColorStop(0, L(.9 * fade)); g.addColorStop(1, L(0));
+        ctx.strokeStyle = g; ctx.lineWidth = 1.1; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke(); ctx.lineCap = 'butt';
+        glow(hx, hy, 5, .6 * fade); dot(hx, hy, 1.1, fade);
+      }
+    } },
+
+    constellation: { kind: 'line', designH: 52, draw(w, h, t) {
+      const cyc = 15, k = Math.floor(t / cyc), u = t % cyc, r = rng(k * 97 + 5), n = 12, y0 = h / 2;
+      for (const s of TW4) dot(s.x * w, 4 + s.y * (h - 8), .4 + .3 * s.z, (.1 + .18 * (.5 + .5 * Math.sin(t + s.ph))) * s.z * edge(s.x * w, w));
+      const pts = Array.from({ length: n }, (_, i) => ({ x: w * (.07 + .86 * i / (n - 1)) + (r() - .5) * w * .04, y: y0 + (r() - .5) * h * .62, z: .5 + r() * .6 }));
+      const drawn = clamp01(u / 10) * (n - 1), fade = u < 13 ? 1 : 1 - (u - 13) / 2;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < n - 1; i++) {
+        const f = clamp01(drawn - i); if (f <= 0) break;
+        const a = pts[i], b = pts[i + 1], cur = f < 1;
+        if (cur) glowOn(5);
+        line(a.x, a.y, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, (cur ? .9 : .42) * fade * edge(a.x + 20, w + 40), cur ? 1 : .8);
+        if (cur) ctx.restore();
+      }
+      ctx.lineCap = 'butt';
+      pts.forEach((p, i) => {
+        const on = i <= drawn + .001, e = edge(p.x + 20, w + 40);
+        dot(p.x, p.y, on ? .9 + .6 * p.z : .7, (on ? .95 * fade + .2 * (1 - fade) : .25) * e);
+        if (on && i === Math.floor(drawn + .001) && u < 10.5) glow(p.x, p.y, 7, .5 * e);
+      });
+    } },
+
+    moonmirror: { kind: 'square', draw(w, h, t, now) {
+      const cx = 80, cy = 80, R = 70, hz = cy + 12, age = lunarAge(now);
+      circle(cx, cy, R, .4, .8);
+      const hw = Math.sqrt(R * R - 144);
+      line(cx - hw, hz, cx + hw, hz, .6, .9);
+      ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, R - 1, 0, TAU); ctx.clip();
+      const st = rng(606);
+      for (let i = 0; i < 18; i++) {
+        const x = cx + (st() - .5) * 120, y = cy - 60 + st() * 62, ph = st() * TAU;
+        if (Math.hypot(x - cx, y - (cy - 26)) < 22 || y > hz - 4) continue;
+        dot(x, y, .7, .2 + .3 * (.5 + .5 * Math.sin(t * 1.3 + ph)));
+      }
+      const illum = (1 - Math.cos(age / SYN * TAU)) / 2;
+      glow(cx, cy - 26, 30, .12 + .2 * illum);
+      moon(cx, cy - 26, 12, age, true);
+      for (let row = 0; row < 12; row++) {
+        const y = hz + 3 + row * 4; if (y > cy + R - 4) break;
+        for (let k = 0; k < 2; k++) {
+          const off = Math.sin(t * 1.7 + row * 2.3 + k * 3) * (3 + row * 1.3), len = (3 + row * .8) * (.5 + .5 * Math.sin(t * 2.6 + row + k * 2)) * (.3 + .7 * illum) + 1;
+          line(cx + off - len, y, cx + off + len, y, (.55 - row * .04) * (.35 + .65 * illum), .9);
+        }
+      }
+      const q = (t % 4) / 2.4;
+      if (q < 1) { const rx = 4 + 40 * easeOut(q); ctx.strokeStyle = L(.45 * (1 - q)); ctx.lineWidth = .8; ctx.beginPath(); ctx.ellipse(cx, hz + 18, rx, rx * .22, 0, 0, TAU); ctx.stroke(); }
+      ctx.restore();
+    } },
+
+    starclock: { kind: 'square', draw(w, h, t, now) {
+      const cx = 80, cy = 80, R = 64, hz = cy + 10, sec = now.getSeconds() + now.getMilliseconds() / 1000, p = now.getMilliseconds() / 1000;
+      circle(cx, cy, R + 9, .5, .9); circle(cx, cy, R, .3, .7);
+      for (let i = 0; i < 60; i++) {
+        const a = UP + i / 60 * TAU, big = i % 5 === 0, r1 = R + (big ? 4 : 6);
+        line(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1, cx + Math.cos(a) * (R + 8), cy + Math.sin(a) * (R + 8), big ? .6 : .2, big ? 1 : .6);
+      }
+      const hw = Math.sqrt(R * R - 100);
+      line(cx - hw, hz, cx + hw, hz, .65, .9);
+      const th = sec / 60 * Math.PI, sx = cx - 50 * Math.cos(th), sy = hz - 44 * Math.sin(th), lift = clamp01(Math.sin(th) * 4);
+      ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, R - 1, 0, TAU); ctx.clip();
+      const st = rng(707);
+      for (let i = 0; i < 20; i++) {
+        const x = cx + (st() - .5) * 116, y = cy - 58 + st() * 62, ph = st() * TAU;
+        if (y > hz - 3 || Math.abs(x - cx) < 20 && Math.abs(y - (cy - 6)) < 9) continue;
+        const a = .2 + .3 * (.5 + .5 * Math.sin(t * 1.3 + ph));
+        dot(x, y, .7, a);
+        const ry = hz + (hz - y) * .6; line(x - 1.2 + Math.sin(t * 2 + ph) * 1.2, ry, x + 1.2 + Math.sin(t * 2 + ph) * 1.2, ry, a * .45, .8);
+      }
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 0, 160, hz - .5); ctx.clip();
+      sparkle(sx, sy, 4.5 + 2 * lift, .4 + .6 * lift); dot(sx, sy, 1.8, lift);
+      ctx.restore();
+      const my = hz + (hz - sy) * .6;
+      for (let row = 0; row < 6; row++) {
+        const y = hz + 3 + row * ((my - hz) / 5 + .4), len = (2 + row * .8) * (.6 + .4 * Math.sin(t * 3 + row * 1.7)), off = Math.sin(t * 2.3 + row * 2.1) * (1 + row * .4);
+        line(sx + off - len, y, sx + off + len, y, (.55 - row * .06) * lift, .9);
+      }
+      const q = easeOut(p), rx = 3 + 22 * q;
+      ctx.strokeStyle = L(.65 * (1 - q) * (.3 + .7 * lift)); ctx.lineWidth = .8; ctx.beginPath(); ctx.ellipse(sx, my, rx, rx * .22, 0, 0, TAU); ctx.stroke();
+      ctx.restore();
+      const hhmm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+      ctx.fillStyle = L(.95); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '15px Marcellus, "Times New Roman", serif'; ctx.fillText(hhmm, cx, cy - 6);
+    } },
+
+    hanging: { kind: 'tall', draw(w, h, t) {
+      line(12, 6, 88, 6, .5, .9); dot(12, 6, 1.4, .7); dot(88, 6, 1.4, .7);
+      [[26, 150, 0], [50, 232, 1], [74, 112, 2]].forEach(([x, len, kind], i) => {
+        const th = .06 * Math.sin(t * (.9 + i * .17) + i * 2), ex = x + Math.sin(th) * len, ey = 6 + Math.cos(th) * len;
+        line(x, 6, ex, ey, .35, .6);
+        for (let b = 1; b < 4; b++) { const f = b / 4 * (len - 16) / len; dot(x + (ex - x) * f, 6 + (ey - 6) * f, .8, .45 + .25 * Math.sin(t * 1.5 + b + i)); }
+        if (kind === 1) {
+          glow(ex, ey + 12, 26, .16);
+          ctx.save(); ctx.translate(ex, ey + 12); ctx.rotate(-th * 2); moon(0, 0, 12, 4.5, false); ctx.restore();
+        } else {
+          const R = kind ? 6 : 9;
+          glow(ex, ey + R, R * 2.6, .25 + .08 * Math.sin(t * 1.4 + i));
+          star4(ex, ey + R, R, R * .22, .96, th * 3);
+        }
+      });
+    } }
+  };
+  const widget = W[name];
+
+  // 大きさ：線は横幅いっぱいで、高さは設計値の1.6倍までを中央に使う。丸と縦長は枠に収まる最大の大きさで中央に置く
+  let vw = 0, vh = 0, box = null;
+  function size() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    vw = innerWidth; vh = innerHeight;
+    canvas.width = Math.round(vw * dpr); canvas.height = Math.round(vh * dpr);
+    if (widget.kind === 'line') { const bh = Math.min(vh, widget.designH * 1.6); box = { x: 0, y: (vh - bh) / 2, s: 1, w: vw, h: bh }; }
+    else {
+      const bw = widget.kind === 'square' ? 160 : 100, bh = widget.kind === 'square' ? 160 : 300, s = Math.min(vw / bw, vh / bh);
+      box = { x: (vw - bw * s) / 2, y: (vh - bh * s) / 2, s, w: bw, h: bh };
+    }
+    box.dpr = dpr;
+  }
+
+  // 軽さのための工夫：毎秒30コマまで。画面外やタブが裏のときは止める
+  let visible = true, running = false, last = 0, tSim = 0;
+  function frame(ts) {
+    running = false;
+    if (!visible || document.hidden) return;
+    if (ts - last >= 32 || reduce) {
+      last = ts;
+      const light = isLight(); INK = light ? '55,53,47' : '255,255,255'; GLOW = light ? .5 : 1;
+      tSim = reduce ? tSim + 1 : ts / 1000;
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(box.dpr * box.s, 0, 0, box.dpr * box.s, box.dpr * box.x, box.dpr * box.y);
+      widget.draw(box.w, box.h, tSim, new Date());
+    }
+    schedule();
+  }
+  function schedule() {
+    if (running || !visible || document.hidden) return;
+    running = true;
+    reduce ? setTimeout(() => requestAnimationFrame(frame), 1000) : requestAnimationFrame(frame);
+  }
+  if ('IntersectionObserver' in window) new IntersectionObserver(es => { visible = es[0].isIntersecting; schedule(); }).observe(canvas);
+  document.addEventListener('visibilitychange', schedule);
+  addEventListener('resize', () => { size(); schedule(); });
+  size(); schedule();
+})();
+</script>
+</body>
+</html>
